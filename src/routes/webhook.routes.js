@@ -1,11 +1,10 @@
 import express from 'express';
-import crypto from 'crypto';
 import { getPaymentById, db } from '../db/database.js';
+import { hasValidSignature } from '../utils/webhook-signature.js';
 
 const router = express.Router();
 
-// Webhook secret for HMAC verification
-const WEBHOOK_SECRET = 'test-webhook-secret-key';
+const VALID_PAYMENT_STATUSES = ['pending', 'completed', 'failed', 'cancelled', 'refunded'];
 
 /**
  * POST /api/webhooks/payment-status
@@ -15,35 +14,35 @@ const WEBHOOK_SECRET = 'test-webhook-secret-key';
  */
 router.post('/payment-status', (req, res) => {
   try {
-    const signature = req.headers['x-webhook-signature'];
-    const { payment_id, status, event_id } = req.body;
-
-    // BUG D: No signature verification
-    // Real systems MUST verify webhook signatures to prevent spoofing
-    // Missing validation below:
-    
-    // const expectedSignature = crypto
-    //   .createHmac('sha256', WEBHOOK_SECRET)
-    //   .update(JSON.stringify(req.body))
-    //   .digest('hex');
-    // 
-    // if (signature !== expectedSignature) {
-    //   return res.status(401).json({ error: 'Invalid signature' });
-    // }
-
-    if (!payment_id || !status) {
-      return res.status(400).json({ error: 'payment_id and status required' });
+    // Bug D fix: authenticate the sender before touching any data. The
+    // signature is an HMAC-SHA256 of the raw request body (constant-time compare).
+    if (!hasValidSignature(req)) {
+      return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    // BUG E: No idempotency check
-    // Webhooks can be delivered multiple times - must be idempotent
-    // Missing check below:
-    
-    // if (db.processed_webhooks.includes(event_id)) {
-    //   return res.status(200).json({ message: 'Already processed' });
-    // }
+    const { payment_id, status, event_id } = req.body;
 
-    const payment = getPaymentById(payment_id);
+    if (typeof payment_id !== 'string' && typeof payment_id !== 'number') {
+      return res.status(400).json({ error: 'payment_id and status required' });
+    }
+    if (!status || typeof status !== 'string') {
+      return res.status(400).json({ error: 'payment_id and status required' });
+    }
+    if (!VALID_PAYMENT_STATUSES.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status', valid_statuses: VALID_PAYMENT_STATUSES });
+    }
+    // event_id is the idempotency key, so it is mandatory.
+    if (typeof event_id !== 'string' || event_id.trim() === '' || event_id.length > 200) {
+      return res.status(400).json({ error: 'event_id required' });
+    }
+
+    // Bug E fix: providers retry deliveries. A repeated event_id must not be
+    // applied twice (it could overwrite a newer status with a stale one).
+    if (db.processed_webhooks.includes(event_id)) {
+      return res.status(200).json({ success: true, message: 'Already processed', event_id });
+    }
+
+    const payment = getPaymentById(String(payment_id));
     if (!payment) {
       return res.status(404).json({ error: 'Payment not found' });
     }
@@ -52,8 +51,11 @@ router.post('/payment-status', (req, res) => {
     payment.status = status;
     payment.webhook_received_at = new Date();
 
-    // Mark webhook as processed (if idempotency was implemented)
-    // db.processed_webhooks.push(event_id);
+    // Record the event only after a successful update, so a webhook for a
+    // payment that does not exist yet can still be retried later.
+    // (Node runs this handler synchronously, so check-and-set cannot interleave.
+    // With a real database use a unique constraint on event_id instead.)
+    db.processed_webhooks.push(event_id);
 
     res.status(200).json({
       success: true,
@@ -74,6 +76,12 @@ router.post('/payment-status', (req, res) => {
  */
 router.post('/e-invoice', (req, res) => {
   try {
+    // Same signature check as the payment webhook: this endpoint is
+    // unauthenticated by design, so the signature is the only protection.
+    if (!hasValidSignature(req)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
     const { invoice_id, status, submission_id, tax_authority_id } = req.body;
 
     if (!invoice_id || !status) {

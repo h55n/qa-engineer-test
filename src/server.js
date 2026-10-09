@@ -22,7 +22,14 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Keep the raw request bytes: webhook signatures are computed over them.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 
 // Initialize database
 initDatabase();
@@ -99,6 +106,10 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, req, res, next) => {
+  // Malformed JSON is a client error, not a server error.
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Invalid JSON body" });
+  }
   console.error(err.stack);
   res.status(500).json({ error: "Something went wrong!" });
 });
@@ -109,4 +120,5 @@ httpServer.listen(PORT, () => {
   console.log(`🔌 Socket.IO ready for real-time updates`);
 });
 
+export { app, httpServer, io };
 export default app;

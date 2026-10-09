@@ -2,32 +2,29 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { findUserByEmail, createUser } from '../db/database.js';
+import { JWT_SECRET } from '../config.js';
+import { isValidEmail, normalizeEmail } from '../utils/validation.js';
 
 const router = express.Router();
-const JWT_SECRET = 'test-secret-key-do-not-use-in-production';
-
-// BUG C: Email validation is too permissive
-function validateEmail(email) {
-  // BUG: This regex allows emails without TLD like "user@domain"
-  const emailRegex = /^[^\s@]+@[^\s@]+$/;
-  return emailRegex.test(email);
-}
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, business_name } = req.body;
+    const { email: rawEmail, password, business_name } = req.body;
 
     // Validation
-    if (!email || !validateEmail(email)) {
+    // Bug C fix: the old regex accepted addresses without a TLD ("user@domain").
+    // Validation now lives in utils/validation.js and also rejects non-strings.
+    if (!isValidEmail(rawEmail)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
+    const email = normalizeEmail(rawEmail);
 
-    if (!password || password.length < 8) {
+    if (typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    if (!business_name || business_name.trim().length < 2) {
+    if (typeof business_name !== 'string' || business_name.trim().length < 2) {
       return res.status(400).json({ error: 'Business name is required' });
     }
 
@@ -75,12 +72,12 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    // Find user
-    const user = findUserByEmail(email);
+    // Find user (case-insensitive, matching registration)
+    const user = findUserByEmail(normalizeEmail(email));
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }

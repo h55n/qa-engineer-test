@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { findUserById } from '../db/database.js';
+import { JWT_SECRET } from '../config.js';
 
-const JWT_SECRET = 'test-secret-key-do-not-use-in-production';
 
 export function authenticate(req, res, next) {
   try {

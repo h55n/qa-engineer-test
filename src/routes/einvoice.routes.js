@@ -17,6 +17,14 @@ router.post('/submit', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'invoice_id required' });
     }
 
+    // Validate B2B requirement first, so a rejected request leaves no
+    // half-created invoice behind. SIRET is exactly 14 digits.
+    if (typeof customer_siret !== 'string' || !/^\d{14}$/.test(customer_siret)) {
+      return res.status(400).json({
+        error: 'Valid customer SIRET required for e-invoicing (14 digits)'
+      });
+    }
+
     // Find or create invoice
     let invoice = db.invoices?.find(inv => inv.id === invoice_id);
     if (!invoice) {
@@ -40,22 +48,13 @@ router.post('/submit', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Validate B2B requirement
-    if (!customer_siret || customer_siret.length !== 14) {
-      return res.status(400).json({ 
-        error: 'Valid customer SIRET required for e-invoicing (14 digits)' 
+    // Bug G fix: never send the same invoice to the tax authority twice.
+    if (invoice.einvoice_status === 'submitted' || invoice.einvoice_status === 'accepted') {
+      return res.status(409).json({
+        error: 'Invoice already submitted to tax authority',
+        submission_id: invoice.einvoice_submission_id
       });
     }
-
-    // BUG G: No duplicate submission check
-    // Should prevent submitting the same invoice twice
-    // Missing validation below:
-    
-    // if (invoice.einvoice_status === 'submitted' || invoice.einvoice_status === 'accepted') {
-    //   return res.status(409).json({ 
-    //     error: 'Invoice already submitted to tax authority' 
-    //   });
-    // }
 
     // Simulate tax authority submission
     const submission_id = `SUB-${uuidv4()}`;

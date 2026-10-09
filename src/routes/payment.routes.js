@@ -1,5 +1,7 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.middleware.js';
+import { MAX_PAYMENT_AMOUNT } from '../config.js';
+import { isValidEmail } from '../utils/validation.js';
 import { createPayment, getPayments, getPaymentById } from '../db/database.js';
 
 const router = express.Router();
@@ -10,10 +12,11 @@ router.get('/', authenticate, (req, res) => {
     const merchantId = req.user.id;
     const payments = getPayments(merchantId);
 
-    // BUG A: Amount is being converted to string instead of remaining as number
     const formattedPayments = payments.map(p => ({
       id: p.id,
-      amount: p.amount.toString(), // ← BUG: Should be number, not string
+      // Bug A fix: amounts are stored as numbers and must stay numbers in the
+      // response (strings break client-side maths). Number() is a no-op here.
+      amount: Number(p.amount),
       currency: p.currency,
       status: p.status,
       customer_email: p.customer_email,
@@ -49,7 +52,7 @@ router.get('/:id', authenticate, (req, res) => {
       success: true,
       data: {
         id: payment.id,
-        amount: payment.amount.toString(), // Same bug as above
+        amount: Number(payment.amount), // Bug A fix (see list endpoint)
         currency: payment.currency,
         status: payment.status,
         customer_email: payment.customer_email,
@@ -68,25 +71,42 @@ router.post('/', authenticate, (req, res) => {
     const { amount, currency, customer_email } = req.body;
 
     // Validation
-    if (!amount || isNaN(amount) || amount <= 0) {
+    // Only real numbers or numeric strings are accepted. Booleans, arrays and
+    // objects pass isNaN() (Number(true) === 1) so they are rejected up front.
+    const numeric =
+      typeof amount === 'number' ||
+      (typeof amount === 'string' && amount.trim() !== '');
+    const value = numeric ? Number(amount) : NaN;
+
+    // Number.isFinite also rejects Infinity, which isNaN() lets through.
+    if (!Number.isFinite(value) || value <= 0) {
       return res.status(400).json({ error: 'Valid amount is required' });
     }
 
-    // BUG B: No maximum amount check - allows unrealistic amounts
-    // Real systems should have limits (e.g., max €50,000 per transaction)
-    // Missing: if (amount > 50000) { return 400 }
+    // Bug B fix: enforce a per-transaction maximum.
+    if (value > MAX_PAYMENT_AMOUNT) {
+      return res.status(400).json({
+        error: `Amount exceeds the maximum of ${MAX_PAYMENT_AMOUNT} per transaction`
+      });
+    }
+
+    // Money has at most 2 decimals; reject fractions of a cent instead of
+    // silently storing them.
+    if (Math.round(value * 100) / 100 !== value) {
+      return res.status(400).json({ error: 'Amount must have at most 2 decimal places' });
+    }
 
     if (!currency || !['EUR', 'USD', 'GBP'].includes(currency)) {
       return res.status(400).json({ error: 'Valid currency is required (EUR, USD, GBP)' });
     }
 
-    if (!customer_email || !customer_email.includes('@')) {
+    if (!isValidEmail(customer_email)) {
       return res.status(400).json({ error: 'Valid customer email is required' });
     }
 
     const payment = createPayment({
       merchant_id: req.user.id,
-      amount: parseFloat(amount),
+      amount: value,
       currency,
       customer_email,
       status: 'pending'

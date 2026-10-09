@@ -72,3 +72,22 @@ test('another merchant cannot submit or read someone else\'s invoice', async () 
 test('status of an unknown invoice is 404', async () => {
   assert.strictEqual((await call('/api/einvoice/status/nope', { token: m.token })).status, 404);
 });
+
+test('Bug Q: non-string invoice_id (object/array) cannot dodge the duplicate check', async () => {
+  for (const id of [{ a: 1 }, ['x'], 123, '', 'x'.repeat(101)]) {
+    const res = await call('/api/einvoice/submit', { method: 'POST', token: m.token, body: { invoice_id: id, customer_siret: SIRET } });
+    assert.strictEqual(res.status, 400, JSON.stringify(id));
+  }
+});
+
+test('Bug R: e-invoice webhook only accepts known statuses', async () => {
+  await submit('inv-r');
+  const { signed } = await import('../../test-utils/helpers.js');
+  for (const status of ['pwned', '<b>x</b>', 7]) {
+    const { raw, headers } = signed({ invoice_id: 'inv-r', status });
+    const res = await call('/api/webhooks/e-invoice', { method: 'POST', raw, headers });
+    assert.strictEqual(res.status, 400, String(status));
+  }
+  const st = await call('/api/einvoice/status/inv-r', { token: m.token });
+  assert.strictEqual(st.data.data.einvoice_status, 'submitted');
+});

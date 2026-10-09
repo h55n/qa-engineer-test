@@ -31,7 +31,15 @@ router.get('/', authenticate, (req, res) => {
  */
 router.post('/', (req, res) => {
   try {
-    const { merchant_id, table_number, items, customer_name, order_type } = req.body;
+    const { table_number, items, customer_name, order_type } = req.body;
+    // Always store merchant_id as a string (JWT ids are strings). A number 1
+    // and a string "1" used to be two different merchants: duplicates slipped
+    // through and the order never showed up in GET /table-orders.
+    const rawMerchant = req.body.merchant_id;
+    const merchant_id =
+      (typeof rawMerchant === 'string' && rawMerchant.trim() !== '') || Number.isInteger(rawMerchant)
+        ? String(rawMerchant).trim()
+        : undefined;
 
     if (!merchant_id || !table_number || !items || !Array.isArray(items)) {
       return res.status(400).json({ error: 'merchant_id, table_number, and items array required' });
@@ -39,6 +47,20 @@ router.post('/', (req, res) => {
 
     if (items.length === 0) {
       return res.status(400).json({ error: 'Order must have at least one item' });
+    }
+
+    const tableOk =
+      (typeof table_number === 'number' && Number.isInteger(table_number) && table_number > 0) ||
+      (typeof table_number === 'string' && /^[A-Za-z0-9-]{1,10}$/.test(table_number));
+    if (!tableOk) {
+      return res.status(400).json({ error: 'table_number must be a positive integer or a short alphanumeric label' });
+    }
+    const TYPES = ['dine_in', 'takeaway', 'delivery'];
+    if (order_type !== undefined && !TYPES.includes(order_type)) {
+      return res.status(400).json({ error: 'Invalid order_type', valid_types: TYPES });
+    }
+    if (customer_name !== undefined && (typeof customer_name !== 'string' || customer_name.length > 100)) {
+      return res.status(400).json({ error: 'customer_name must be a string of at most 100 characters' });
     }
 
     // Validate line items: a negative price or fractional quantity would
@@ -141,7 +163,7 @@ router.patch('/:id/status', authenticate, (req, res) => {
     // Emit socket event for real-time update
     const io = req.app.get('io');
     if (io) {
-      io.to(`table_${order.table_number}`).emit('order_status_changed', {
+      io.to(`table_${order.merchant_id}_${order.table_number}`).emit('order_status_changed', {
         order_id: order.id,
         status: status,
         table_number: order.table_number

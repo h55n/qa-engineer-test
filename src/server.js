@@ -7,7 +7,9 @@ import paymentRoutes from "./routes/payment.routes.js";
 import webhookRoutes from "./routes/webhook.routes.js";
 import tableOrderRoutes from "./routes/table-order.routes.js";
 import einvoiceRoutes from "./routes/einvoice.routes.js";
+import jwt from "jsonwebtoken";
 import { initDatabase } from "./db/database.js";
+import { JWT_SECRET } from "./config.js";
 
 const app = express();
 const httpServer = createServer(app);
@@ -35,18 +37,43 @@ app.use(
 initDatabase();
 
 // Socket.IO connection handling
+// A socket may only listen to its own merchant's data, so it has to prove who
+// it is. Clients pass the same JWT used for the REST API:
+//   io(url, { auth: { token } })
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
+      socket.data.merchantId = String(decoded.id);
+    } catch {
+      return next(new Error("Invalid token"));
+    }
+  }
+  next(); // anonymous sockets may connect but cannot join any room
+});
+
 io.on("connection", (socket) => {
   console.log("📱 Client connected:", socket.id);
 
-  // Join merchant room for real-time updates
+  // Join merchant room for real-time updates (own merchant only)
   socket.on("join_merchant", (merchantId) => {
-    socket.join(`merchant_${merchantId}`);
-    console.log(`Merchant ${merchantId} joined room`);
+    if (!socket.data.merchantId || String(merchantId) !== socket.data.merchantId) {
+      socket.emit("error_message", { error: "Not allowed to join this merchant room" });
+      return;
+    }
+    socket.join(`merchant_${socket.data.merchantId}`);
+    console.log(`Merchant ${socket.data.merchantId} joined room`);
   });
 
-  // Join table room for order updates
+  // Join table room for order updates. Room names include the merchant, so two
+  // merchants that both have a "table 5" never see each other's events.
   socket.on("join_table", (tableNumber) => {
-    socket.join(`table_${tableNumber}`);
+    if (!socket.data.merchantId) {
+      socket.emit("error_message", { error: "Authentication required" });
+      return;
+    }
+    socket.join(`table_${socket.data.merchantId}_${tableNumber}`);
     console.log(`Joined table ${tableNumber} room`);
   });
 

@@ -4,6 +4,7 @@ import { hasValidSignature } from '../utils/webhook-signature.js';
 
 const router = express.Router();
 
+const VALID_EINVOICE_STATUSES = ['submitted', 'accepted', 'rejected'];
 const VALID_PAYMENT_STATUSES = ['pending', 'completed', 'failed', 'cancelled', 'refunded'];
 
 /**
@@ -84,8 +85,11 @@ router.post('/e-invoice', (req, res) => {
 
     const { invoice_id, status, submission_id, tax_authority_id } = req.body;
 
-    if (!invoice_id || !status) {
+    if (typeof invoice_id !== 'string' || !invoice_id || typeof status !== 'string' || !status) {
       return res.status(400).json({ error: 'invoice_id and status required' });
+    }
+    if (!VALID_EINVOICE_STATUSES.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status', valid_statuses: VALID_EINVOICE_STATUSES });
     }
 
     // Find invoice in database

@@ -23,8 +23,13 @@ router.post('/register', async (req, res) => {
     if (typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
+    // bcrypt only reads the first 72 bytes. Longer passwords would be silently
+    // cut, so two different long passwords could unlock the same account.
+    if (Buffer.byteLength(password) > 72) {
+      return res.status(400).json({ error: 'Password must be at most 72 bytes' });
+    }
 
-    if (typeof business_name !== 'string' || business_name.trim().length < 2) {
+    if (typeof business_name !== 'string' || business_name.trim().length < 2 || business_name.length > 100) {
       return res.status(400).json({ error: 'Business name is required' });
     }
 

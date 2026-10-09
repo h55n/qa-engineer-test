@@ -93,3 +93,13 @@ test('malformed JSON body returns 400, not 500', async () => {
   const res = await call('/api/auth/login', { method: 'POST', raw: '{bad json' });
   assert.strictEqual(res.status, 400);
 });
+
+test('Bug S: passwords longer than 72 bytes are rejected instead of silently truncated', async () => {
+  const res = await reg('long.pw@example.com', { password: 'a'.repeat(73) });
+  assert.strictEqual(res.status, 400);
+  assert.strictEqual((await reg('ok.pw@example.com', { password: 'a'.repeat(72) })).status, 201);
+});
+
+test('Bug S: overly long business name is rejected', async () => {
+  assert.strictEqual((await reg('bn@example.com', { business_name: 'x'.repeat(101) })).status, 400);
+});

@@ -92,7 +92,7 @@ test('status update requires auth, a valid status and ownership', async () => {
 });
 
 test('Socket.IO: new_order and order_status_changed are emitted to the right rooms', async () => {
-  const client = ioClient(srv.base, { transports: ['websocket'] });
+  const client = ioClient(srv.base, { transports: ['websocket'], auth: { token: m.token } });
   const events = [];
   client.on('new_order', (e) => events.push(['new_order', e]));
   client.on('order_status_changed', (e) => events.push(['status', e]));
@@ -110,4 +110,71 @@ test('Socket.IO: new_order and order_status_changed are emitted to the right roo
 
   assert.ok(events.some(([t, e]) => t === 'new_order' && e.table_number === 90));
   assert.ok(events.some(([t, e]) => t === 'status' && e.status === 'preparing' && e.table_number === 90));
+});
+
+test('Bug M: merchant_id 1 and "1" are the same merchant (no duplicate bypass, order is listed)', async () => {
+  const num = await call('/api/table-orders', { method: 'POST', body: { merchant_id: Number(m.id), table_number: 120, items } });
+  assert.strictEqual(num.status, 201);
+  assert.strictEqual(num.data.data.merchant_id, String(m.id));
+  assert.strictEqual((await order(120)).status, 409);
+  const list = await call('/api/table-orders', { token: m.token });
+  assert.ok(list.data.data.some((o) => o.id === num.data.data.id));
+});
+
+test('Bug N: odd merchant_id / table_number / order_type / customer_name types are rejected', async () => {
+  const post = (body) => call('/api/table-orders', { method: 'POST', body: { merchant_id: m.id, table_number: 130, items, ...body } });
+  assert.strictEqual((await post({ merchant_id: { a: 1 } })).status, 400);
+  assert.strictEqual((await post({ table_number: { x: 1 } })).status, 400);
+  assert.strictEqual((await post({ table_number: -3 })).status, 400);
+  assert.strictEqual((await post({ table_number: 1.5 })).status, 400);
+  assert.strictEqual((await post({ order_type: 'teleport' })).status, 400);
+  assert.strictEqual((await post({ customer_name: ['x'] })).status, 400);
+  assert.strictEqual((await post({ customer_name: 'x'.repeat(101) })).status, 400);
+});
+
+function connect(token) {
+  const c = ioClient(srv.base, { transports: ['websocket'], auth: token ? { token } : {} });
+  const got = [];
+  c.on('new_order', (e) => got.push(['new_order', e]));
+  c.on('order_status_changed', (e) => got.push(['status', e]));
+  c.on('error_message', (e) => got.push(['error', e]));
+  return new Promise((resolve) => c.on('connect', () => resolve({ c, got })));
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('Bug O: a socket cannot listen to another merchant\'s orders', async () => {
+  const victim = await registerMerchant(call);
+  const attacker = await registerMerchant(call);
+  const anon = await connect(null);
+  const evil = await connect(attacker.token);
+  anon.c.emit('join_merchant', victim.id);
+  evil.c.emit('join_merchant', victim.id);
+  await wait(150);
+  await call('/api/table-orders', { method: 'POST', body: { merchant_id: victim.id, table_number: 7, items } });
+  await wait(150);
+  for (const x of [anon, evil]) {
+    assert.ok(!x.got.some(([t]) => t === 'new_order'), 'must not receive victim orders');
+    assert.ok(x.got.some(([t]) => t === 'error'), 'must be told it was refused');
+    x.c.close();
+  }
+});
+
+test('Bug O: a socket with an invalid token is refused', async () => {
+  const c = ioClient(srv.base, { transports: ['websocket'], auth: { token: 'garbage' } });
+  const err = await new Promise((r) => c.on('connect_error', r));
+  assert.match(err.message, /Invalid token/);
+  c.close();
+});
+
+test('Bug P: two merchants with the same table number do not see each other\'s status events', async () => {
+  const a = await registerMerchant(call);
+  const b = await registerMerchant(call);
+  const watcherB = await connect(b.token);
+  watcherB.c.emit('join_table', 9);
+  await wait(150);
+  const created = await call('/api/table-orders', { method: 'POST', body: { merchant_id: a.id, table_number: 9, items } });
+  await call(`/api/table-orders/${created.data.data.id}/status`, { method: 'PATCH', token: a.token, body: { status: 'ready' } });
+  await wait(150);
+  assert.strictEqual(watcherB.got.filter(([t]) => t === 'status').length, 0);
+  watcherB.c.close();
 });

@@ -84,3 +84,9 @@ test('merchants cannot read each other\'s payments (IDOR)', async () => {
 test('unknown payment id returns 404', async () => {
   assert.strictEqual((await call('/api/payments/99999', { token })).status, 404);
 });
+
+test('Bug T: hex, exponent and padded strings are not valid amounts', async () => {
+  for (const amount of ['0x10', '1e1', ' 5 ', '5.', '.5', '+5', '5,00']) {
+    assert.strictEqual((await create({ ...valid, amount })).status, 400, `amount ${amount}`);
+  }
+});

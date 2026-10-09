@@ -73,9 +73,11 @@ router.post('/', authenticate, (req, res) => {
     // Validation
     // Only real numbers or numeric strings are accepted. Booleans, arrays and
     // objects pass isNaN() (Number(true) === 1) so they are rejected up front.
+    // Strings must look like plain decimals ("12.50"). Number() would also
+    // accept "0x10" (16), "1e1" (10) or " 5 ", which are almost certainly mistakes.
     const numeric =
       typeof amount === 'number' ||
-      (typeof amount === 'string' && amount.trim() !== '');
+      (typeof amount === 'string' && /^\d+(\.\d+)?$/.test(amount));
     const value = numeric ? Number(amount) : NaN;
 
     // Number.isFinite also rejects Infinity, which isNaN() lets through.
